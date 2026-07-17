@@ -35,9 +35,8 @@ EMBED_MODEL = "text-embedding-3-small"
 #   Ashby:      https://jobs.ashbyhq.com/{token}               -> ats="ashby"
 #   Lever:      https://jobs.lever.co/{token}                  -> ats="lever"
 COMPANIES = [
-    {"name": "Example Greenhouse Co", "ats": "greenhouse", "token": "examplecompany"},
-    {"name": "Example Ashby Co", "ats": "ashby", "token": "examplecompany"},
-    {"name": "Example Lever Co", "ats": "lever", "token": "examplecompany"},
+    {"name": "EliseAI", "ats": "ashby", "token": "eliseai"},
+    {"name": "Browserbase", "ats": "ashby", "token": "browserbase"}
 ]
 
 # Only titles matching one of these (case-insensitive, substring match) survive
@@ -49,13 +48,35 @@ TITLE_KEYWORDS = [
 ]
 
 IDEAL_ROLE = """
-Founding or early engineer role building an AI-native product from 0 to 1.
-Uses the OpenAI SDK and MCP (Model Context Protocol) in the actual product.
-Values product sense and user-centric thinking, not just backend/infra execution.
-Small team, high ownership, ambiguity expected.
+Founding engineer, software engineer, technical member of staff or full stack engineer or backend engineer role building an AI-native product from 0 to 1.
+
+Ideally involves browser automation, agents that navigate and interact with
+the web, or similar interfaces where AI takes action rather than just
+generating text.
+
+Uses MCP (Model Context Protocol) and/or generative AI such as open ai in the actual
+product, not just internal tooling.
+
+Values direct customer contact — talking to users, listening for pain
+points, and shipping fixes fast — over a purely backend/infra-driven
+process.
+
+Uses metrics like retention (not just usage or activation) as a core signal
+for what's broken and what to build next.
+
+Small team, high ownership, ambiguity expected — willing to wear whatever
+hat the day requires.
 """
 
 TOP_N_TO_SHOW = 20
+
+# Raw OpenAI cosine similarity between a job posting and a role description
+# realistically lands in ~0.15 (unrelated) to ~0.65 (strong match) — it almost
+# never approaches 1.0 even for a great fit. We rescale that observed range
+# onto 0-100% so "match %" is meaningful, then filter on the rescaled value.
+RAW_SIMILARITY_FLOOR = 0.15
+RAW_SIMILARITY_CEIL = 0.65
+MATCH_THRESHOLD_PCT = 80
 
 # ---------------------------------------------------------------------------
 # 2. FETCHERS — one per ATS, each returns a list of normalized job dicts.
@@ -217,13 +238,19 @@ def cosine_similarity(a, b):
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
 
+def to_match_pct(raw_score):
+    span = RAW_SIMILARITY_CEIL - RAW_SIMILARITY_FLOOR
+    pct = (raw_score - RAW_SIMILARITY_FLOOR) / span * 100
+    return max(0.0, min(100.0, pct))
+
+
 def rank_jobs(jobs, ideal_vector):
     scored = []
     for job in jobs:
         text_to_embed = f"{job['title']}\n{job['description']}"
         vec = embed(text_to_embed)
         score = cosine_similarity(ideal_vector, vec)
-        scored.append({**job, "score": score})
+        scored.append({**job, "score": score, "match_pct": to_match_pct(score)})
     scored.sort(key=lambda j: j["score"], reverse=True)
     return scored
 
@@ -250,15 +277,19 @@ def main():
     print(f"Embedding {len(title_filtered)} postings and scoring...")
     ranked = rank_jobs(title_filtered, ideal_vector)
 
-    print(f"\nTop {min(TOP_N_TO_SHOW, len(ranked))} matches:\n")
-    for job in ranked[:TOP_N_TO_SHOW]:
+    matches = [j for j in ranked if j["match_pct"] >= MATCH_THRESHOLD_PCT][:TOP_N_TO_SHOW]
+
+    print(f"\n{len(matches)} posting(s) at or above {MATCH_THRESHOLD_PCT}% match:\n")
+    if not matches:
+        print("(none — try lowering MATCH_THRESHOLD_PCT)")
+    for job in matches:
         meta = " | ".join(filter(None, [
             job["department"],
             job["workplace_type"],
             job["location"],
             job["compensation"],
         ]))
-        print(f"{job['score']:.3f}  {job['company'][:23]}  {job['title']}")
+        print(f"{job['match_pct']:5.1f}%  {job['company'][:23]}  {job['title']}")
         if meta:
             print(f"       {meta}")
         print(f"       {job['url']}")
