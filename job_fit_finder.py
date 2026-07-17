@@ -10,7 +10,8 @@ Pipeline:
 
 Setup:
   pip install openai numpy requests --break-system-packages
-  export OPENAI_API_KEY=sk-...
+  Put OPENAI_API_KEY=sk-... in a .env file next to this script (or export it
+  in your shell).
 
 Usage:
   python job_fit_finder.py
@@ -21,6 +22,22 @@ import re
 import requests
 import numpy as np
 from openai import OpenAI
+
+
+def _load_dotenv():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.exists(env_path):
+        return
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 EMBED_MODEL = "text-embedding-3-small"
@@ -35,8 +52,11 @@ EMBED_MODEL = "text-embedding-3-small"
 #   Ashby:      https://jobs.ashbyhq.com/{token}               -> ats="ashby"
 #   Lever:      https://jobs.lever.co/{token}                  -> ats="lever"
 COMPANIES = [
-    {"name": "EliseAI", "ats": "ashby", "token": "eliseai"},
-    {"name": "Browserbase", "ats": "ashby", "token": "browserbase"}
+    # {"name": "EliseAI", "ats": "ashby", "token": "eliseai"},
+    # {"name": "Browserbase", "ats": "ashby", "token": "browserbase"},
+    # {"name": " Tamarind Bio", "ats": "ashby", "token": "tamarindbio"},
+    {"name": "Decagon", "ats": "ashby", "token": "decagon"}
+
 ]
 
 # Only titles matching one of these (case-insensitive, substring match) survive
@@ -45,6 +65,12 @@ TITLE_KEYWORDS = [
     "product engineer",
     "software engineer",
     "founding engineer",
+]
+
+# Titles containing any of these (case-insensitive, substring match) are
+# dropped even if they'd otherwise pass TITLE_KEYWORDS — no staff-level roles.
+TITLE_EXCLUDE_KEYWORDS = [
+    "staff",
 ]
 
 IDEAL_ROLE = """
@@ -219,8 +245,20 @@ def fetch_all_postings():
 # 3. TITLE FILTER — cheap pass before spending anything on embeddings.
 # ---------------------------------------------------------------------------
 
+def title_excluded(title):
+    title_lower = title.lower()
+    if any(keyword in title_lower for keyword in TITLE_EXCLUDE_KEYWORDS):
+        return True
+    # "manager" is excluded, except "product manager" is allowed through.
+    if "manager" in title_lower and "product manager" not in title_lower:
+        return True
+    return False
+
+
 def title_matches(title):
     title_lower = title.lower()
+    if title_excluded(title):
+        return False
     return any(keyword in title_lower for keyword in TITLE_KEYWORDS)
 
 

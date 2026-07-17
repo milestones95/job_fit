@@ -47,8 +47,11 @@ def render_card(job):
 
 def main():
     print("Fetching postings...")
-    jobs = jf.fetch_all_postings()
-    print(f"Total postings fetched: {len(jobs)}")
+    all_jobs = jf.fetch_all_postings()
+    print(f"Total postings fetched: {len(all_jobs)}")
+
+    jobs = [j for j in all_jobs if not jf.title_excluded(j["title"])]
+    print(f"After excluding manager/staff titles: {len(jobs)}")
 
     print("Embedding ideal-role description...")
     ideal_vector = jf.embed(jf.IDEAL_ROLE)
