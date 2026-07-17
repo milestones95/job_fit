@@ -11,6 +11,7 @@ import html
 import job_fit_finder as jf
 
 OUT_PATH = "jobs_dashboard.html"
+MIN_MATCH_PCT = 70
 
 
 def score_badge_class(pct):
@@ -58,6 +59,9 @@ def main():
 
     print(f"Embedding {len(jobs)} postings and scoring (this calls the OpenAI API once per posting)...")
     ranked = jf.rank_jobs(jobs, ideal_vector)  # already sorted by score, descending
+
+    ranked = [j for j in ranked if j["match_pct"] >= MIN_MATCH_PCT]
+    print(f"After dropping postings below {MIN_MATCH_PCT}% match: {len(ranked)}")
 
     departments = sorted({j["department"] for j in ranked if j["department"]})
     dept_options = "".join(f"<option>{html.escape(d)}</option>" for d in departments)
