@@ -52,9 +52,9 @@ EMBED_MODEL = "text-embedding-3-small"
 #   Ashby:      https://jobs.ashbyhq.com/{token}               -> ats="ashby"
 #   Lever:      https://jobs.lever.co/{token}                  -> ats="lever"
 COMPANIES = [
-    # {"name": "EliseAI", "ats": "ashby", "token": "eliseai"},
-    # {"name": "Browserbase", "ats": "ashby", "token": "browserbase"},
-    # {"name": " Tamarind Bio", "ats": "ashby", "token": "tamarindbio"},
+    {"name": "EliseAI", "ats": "ashby", "token": "eliseai"},
+    {"name": "Browserbase", "ats": "ashby", "token": "browserbase"},
+    {"name": " Tamarind Bio", "ats": "ashby", "token": "tamarindbio"},
     {"name": "Decagon", "ats": "ashby", "token": "decagon"}
 
 ]
@@ -282,10 +282,21 @@ def to_match_pct(raw_score):
     return max(0.0, min(100.0, pct))
 
 
+def embed_jobs(jobs):
+    """Attach an 'embedding' (np.array) to each job dict, without scoring.
+    Used by feedback_scoring.score_jobs_auto, which needs the raw vectors
+    to compare against kept/dismissed examples."""
+    out = []
+    for job in jobs:
+        text_to_embed = job["title"]
+        out.append({**job, "embedding": embed(text_to_embed)})
+    return out
+
+
 def rank_jobs(jobs, ideal_vector):
     scored = []
     for job in jobs:
-        text_to_embed = f"{job['title']}\n{job['description']}"
+        text_to_embed = job["title"]
         vec = embed(text_to_embed)
         score = cosine_similarity(ideal_vector, vec)
         scored.append({**job, "score": score, "match_pct": to_match_pct(score)})

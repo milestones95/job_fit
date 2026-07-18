@@ -1,2 +1,4 @@
 /.env
 /__pycache__/
+/job_feedback.json
+/job_embeddings_cache.json
