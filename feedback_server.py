@@ -13,9 +13,9 @@ Usage:
 Endpoints:
   POST /api/analyze              {"titles": "...", "ideal_role": "..."}  -> build_dashboard.build(titles, ideal_role)
   POST /api/show_all             (no body)                                -> build_dashboard.build_show_all()
-  POST /api/extension/analyze    {"company_token": "...", "company_name": "...",
-                                   "titles": "...", "ideal_role": "..."}
-                                  -> ranked jobs (JSON) for one Ashby company, for the
+  POST /api/extension/analyze    {"ats": "ashby"|"greenhouse", "company_token": "...",
+                                   "company_name": "...", "titles": "...", "ideal_role": "..."}
+                                  -> ranked jobs (JSON) for one company on one ATS, for the
                                      Chrome extension popup (see extension/). CORS-enabled
                                      since the caller is a chrome-extension:// origin.
 """
@@ -93,10 +93,14 @@ class Handler(SimpleHTTPRequestHandler):
 
         company_token = (body.get("company_token") or "").strip()
         company_name = (body.get("company_name") or company_token).strip()
+        ats = (body.get("ats") or "").strip().lower()
         titles = (body.get("titles") or "").strip()
         ideal_role = (body.get("ideal_role") or "").strip()
         if not company_token:
             self._send_json(400, {"error": "missing company_token"})
+            return
+        if ats not in jf.FETCHERS:
+            self._send_json(400, {"error": f"unsupported ats '{ats}'"})
             return
         if not titles:
             self._send_json(400, {"error": "missing titles"})
@@ -112,7 +116,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         try:
-            jobs = jf.fetch_ashby(company_name, company_token)
+            jobs = jf.FETCHERS[ats](company_name, company_token)
         except Exception as e:
             self._send_json(502, {"error": f"could not fetch postings for '{company_token}': {e}"})
             return
@@ -121,6 +125,12 @@ class Handler(SimpleHTTPRequestHandler):
         if not matched:
             self._send_json(200, {"status": "ok", "count": 0, "jobs": []})
             return
+
+        if ats == "greenhouse":
+            try:
+                jf.enrich_greenhouse_compensation(matched, company_token)
+            except Exception as e:
+                print(f"[extension_analyze] compensation enrichment failed, continuing without it: {e}")
 
         try:
             ranked = jf.rank_jobs_by_llm(matched, ideal_role_text=ideal_role)

@@ -114,7 +114,7 @@ MATCH_THRESHOLD_PCT = 80
 # ---------------------------------------------------------------------------
 
 def normalize(company, title, location, url, description,
-              department="", workplace_type="", compensation=""):
+              department="", workplace_type="", compensation="", job_id=""):
     return {
         "company": company,
         "title": title or "",
@@ -124,6 +124,7 @@ def normalize(company, title, location, url, description,
         "department": department or "",
         "workplace_type": workplace_type or "",
         "compensation": compensation or "",
+        "job_id": job_id or "",
     }
 
 
@@ -134,14 +135,72 @@ def fetch_greenhouse(company_name, token):
     jobs = resp.json().get("jobs", [])
     out = []
     for j in jobs:
+        departments = j.get("departments") or []
+        department = departments[0].get("name") if departments else ""
         out.append(normalize(
-            company=company_name,
+            company=j.get("company_name") or company_name,
             title=j.get("title"),
             location=(j.get("location") or {}).get("name"),
             url=j.get("absolute_url"),
             description=re.sub("<[^<]+?>", " ", j.get("content") or ""),  # strip HTML
+            department=department,
+            job_id=j.get("id"),
         ))
     return out
+
+
+def _greenhouse_compensation(job_detail):
+    # Not present on the list endpoint (even with content=true) — only the
+    # single-job detail endpoint returns pay_input_ranges, and even then
+    # only for postings whose employer has published a range.
+    ranges = job_detail.get("pay_input_ranges") or []
+    if not ranges:
+        return ""
+    r = ranges[0]
+    lo = r.get("min_cents")
+    hi = r.get("max_cents")
+    currency = r.get("currency_type", "USD")
+    symbol = "$" if currency == "USD" else f"{currency} "
+    if lo and hi:
+        return f"{symbol}{lo/100:,.0f}–{symbol}{hi/100:,.0f} / Year"
+    if hi:
+        return f"Up to {symbol}{hi/100:,.0f} / Year"
+    if lo:
+        return f"{symbol}{lo/100:,.0f}+ / Year"
+    return ""
+
+
+def fetch_greenhouse_job_detail(token, job_id):
+    url = f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs/{job_id}"
+    resp = requests.get(url, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def enrich_greenhouse_compensation(jobs, token, max_workers=5):
+    """Fills in compensation for an already title-filtered list of Greenhouse
+    jobs via one detail-endpoint call per job (the list endpoint has no
+    pay_input_ranges) using a small bounded thread pool purely for
+    concurrency — same cheap-filter-then-parallel-enrich shape as
+    rank_jobs_by_llm. Mutates jobs in place and returns them. Never raises:
+    a failed per-job lookup just leaves that job's compensation blank."""
+    def _work(i):
+        job_id = jobs[i].get("job_id")
+        if not job_id:
+            return i, ""
+        try:
+            detail = fetch_greenhouse_job_detail(token, job_id)
+            return i, _greenhouse_compensation(detail)
+        except Exception:
+            return i, ""
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(_work, i) for i in range(len(jobs))]
+        for fut in as_completed(futures):
+            i, compensation = fut.result()
+            jobs[i]["compensation"] = compensation
+
+    return jobs
 
 
 def _ashby_compensation(j):

@@ -1,10 +1,12 @@
 const SERVER_URL = "http://localhost:8765/api/extension/analyze";
 const ASHBY_URL_RE = /^https:\/\/jobs\.ashbyhq\.com\/([^/?#]+)/i;
-const TITLE_SUFFIX_RE = /^(.*?)\s+Jobs\b/i;
+const GREENHOUSE_URL_RE = /^https:\/\/(?:boards|job-boards)\.greenhouse\.io\/([^/?#]+)/i;
+const ASHBY_TITLE_RE = /^(.*?)\s+Jobs\b/i;
+const GREENHOUSE_TITLE_RE = /^Jobs at (.+)$/i;
 
 const els = {
   companyLabel: document.getElementById("company-label"),
-  notAshby: document.getElementById("not-ashby"),
+  notSupported: document.getElementById("not-supported"),
   form: document.getElementById("form"),
   titles: document.getElementById("titles"),
   idealRole: document.getElementById("ideal-role"),
@@ -22,8 +24,9 @@ function titleCaseToken(token) {
     .join(" ");
 }
 
-function deriveCompanyName(tabTitle, token) {
-  const m = (tabTitle || "").match(TITLE_SUFFIX_RE);
+function deriveCompanyName(ats, tabTitle, token) {
+  const re = ats === "greenhouse" ? GREENHOUSE_TITLE_RE : ASHBY_TITLE_RE;
+  const m = (tabTitle || "").match(re);
   if (m && m[1].trim()) return m[1].trim();
   return titleCaseToken(token);
 }
@@ -95,7 +98,7 @@ function renderResults(jobs) {
   }
 }
 
-async function analyze(companyToken, companyName, tabId) {
+async function analyze(ats, companyToken, companyName, tabId) {
   const titles = els.titles.value.trim();
   const idealRole = els.idealRole.value.trim();
   if (!titles) {
@@ -124,6 +127,7 @@ async function analyze(companyToken, companyName, tabId) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        ats,
         company_token: companyToken,
         company_name: companyName,
         titles,
@@ -137,7 +141,7 @@ async function analyze(companyToken, companyName, tabId) {
     const jobs = data.jobs || [];
     renderResults(jobs);
     await chrome.storage.local.set({
-      [tabResultsKey(tabId)]: { companyToken, titles, idealRole, jobs, ts: Date.now() },
+      [tabResultsKey(tabId)]: { ats, companyToken, companyName, titles, idealRole, jobs, ts: Date.now() },
     });
   } catch (e) {
     const message = e instanceof TypeError
@@ -154,15 +158,27 @@ async function analyze(companyToken, companyName, tabId) {
 
 async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const match = (tab.url || "").match(ASHBY_URL_RE);
+  const url = tab.url || "";
 
-  if (!match) {
-    els.notAshby.classList.remove("hidden");
+  let ats, companyToken;
+  let match = url.match(ASHBY_URL_RE);
+  if (match) {
+    ats = "ashby";
+    companyToken = match[1];
+  } else {
+    match = url.match(GREENHOUSE_URL_RE);
+    if (match) {
+      ats = "greenhouse";
+      companyToken = match[1];
+    }
+  }
+
+  if (!ats) {
+    els.notSupported.classList.remove("hidden");
     return;
   }
 
-  const companyToken = match[1];
-  const companyName = deriveCompanyName(tab.title, companyToken);
+  const companyName = deriveCompanyName(ats, tab.title, companyToken);
   els.companyLabel.textContent = companyName;
   els.form.classList.remove("hidden");
 
@@ -170,12 +186,12 @@ async function init() {
   if (stored.titles) els.titles.value = stored.titles;
   if (stored.ideal_role) els.idealRole.value = stored.ideal_role;
 
-  els.analyzeBtn.addEventListener("click", () => analyze(companyToken, companyName, tab.id));
+  els.analyzeBtn.addEventListener("click", () => analyze(ats, companyToken, companyName, tab.id));
 
   const tabKey = tabResultsKey(tab.id);
   const cached = await chrome.storage.local.get(tabKey);
   const entry = cached[tabKey];
-  if (entry && entry.companyToken === companyToken) {
+  if (entry && entry.companyToken === companyToken && entry.ats === ats) {
     if (entry.titles) els.titles.value = entry.titles;
     if (entry.idealRole) els.idealRole.value = entry.idealRole;
     renderResults(entry.jobs);
