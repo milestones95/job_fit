@@ -34,15 +34,6 @@ def score_badge_class(pct):
     return "score-lo"
 
 
-def to_match_pct(score, mode):
-    """Legacy — unused by main(), kept only for debug_scores.py /
-    debug_reason_scoring.py, which still exercise the embedding+centroid
-    pipeline directly."""
-    if mode == "classifier":
-        return max(0.0, min(100.0, score * 100))
-    return jf.to_match_pct(score)
-
-
 def render_card(job, scored=True):
     job_id = html.escape(job["url"])
     title = html.escape(job["title"].strip())

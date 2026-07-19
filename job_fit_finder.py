@@ -4,12 +4,13 @@ Job fit finder — v1
 Pipeline:
   1. Pull postings from Greenhouse / Ashby / Lever public APIs for a list of companies.
   2. Normalize into one common shape.
-  3. Filter by title (product engineer / software engineer / founding engineer).
-  4. Embed survivors + your "ideal role" description, rank by cosine similarity.
+  3. Filter by title (expanded via LLM from titles you type in).
+  4. Score survivors against your "ideal role" description via one direct
+     LLM chat-completion call per posting.
   5. Print a ranked table.
 
 Setup:
-  pip install openai numpy requests --break-system-packages
+  pip install openai requests --break-system-packages
   Put OPENAI_API_KEY=sk-... in a .env file next to this script (or export it
   in your shell).
 
@@ -25,7 +26,6 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
-import numpy as np
 from openai import OpenAI
 
 
@@ -45,7 +45,6 @@ def _load_dotenv():
 _load_dotenv()
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-EMBED_MODEL = "text-embedding-3-small"  # kept for the debug_*.py scripts; unused by main()/build_dashboard.py
 
 # Chat models used for the direct-LLM flow (title expansion + per-job scoring).
 CHAT_MODEL_EXPAND = os.environ.get("JOB_FIT_EXPAND_MODEL", "gpt-4o-mini")
@@ -107,15 +106,8 @@ hat the day requires.
 TOP_N_TO_SHOW = 20
 
 # The LLM is asked to output a 0-100 match score directly, so this threshold
-# compares straight against that — no rescaling needed (unlike raw cosine
-# similarity, which needed floor/ceil rescaling to be meaningful).
+# compares straight against that.
 MATCH_THRESHOLD_PCT = 80
-
-# Legacy — only used by to_match_pct() below, which is itself unused by
-# main()/build_dashboard.py and kept only for the debug_*.py scripts that
-# still exercise the embedding+centroid pipeline directly.
-RAW_SIMILARITY_FLOOR = 0.15
-RAW_SIMILARITY_CEIL = 0.65
 
 # ---------------------------------------------------------------------------
 # 2. FETCHERS — one per ATS, each returns a list of normalized job dicts.
@@ -255,7 +247,7 @@ def fetch_all_postings():
 
 
 # ---------------------------------------------------------------------------
-# 3. TITLE FILTER — cheap pass before spending anything on embeddings.
+# 3. TITLE FILTER — cheap pass before spending anything on LLM scoring calls.
 # ---------------------------------------------------------------------------
 
 def title_excluded(title):
@@ -376,37 +368,7 @@ def get_target_title_keywords(force_reprompt=False):
 
 
 # ---------------------------------------------------------------------------
-# 5. EMBEDDING HELPERS — unused by main()/build_dashboard.py; kept only so
-#    the debug_*.py scripts (which still call these directly) keep working.
-# ---------------------------------------------------------------------------
-
-def embed(text):
-    text = text[:8000]  # keep well under the model's input limit
-    response = client.embeddings.create(model=EMBED_MODEL, input=text)
-    return np.array(response.data[0].embedding)
-
-
-def cosine_similarity(a, b):
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
-
-
-def to_match_pct(raw_score):
-    span = RAW_SIMILARITY_CEIL - RAW_SIMILARITY_FLOOR
-    pct = (raw_score - RAW_SIMILARITY_FLOOR) / span * 100
-    return max(0.0, min(100.0, pct))
-
-
-def embed_jobs(jobs):
-    """Attach an 'embedding' (np.array) to each job dict, without scoring."""
-    out = []
-    for job in jobs:
-        text_to_embed = job["title"]
-        out.append({**job, "embedding": embed(text_to_embed)})
-    return out
-
-
-# ---------------------------------------------------------------------------
-# 6. DIRECT-LLM SCORING — replaces embedding cosine-similarity ranking.
+# 5. DIRECT-LLM SCORING
 # ---------------------------------------------------------------------------
 
 def _ideal_role_hash(ideal_role_text):
@@ -471,9 +433,9 @@ Score 0-100 how well this posting matches the ideal role (100 = perfect match,
 
 
 def rank_jobs_by_llm(jobs, ideal_role_text=IDEAL_ROLE, model=CHAT_MODEL_SCORE, max_workers=5, use_cache=True):
-    """Replaces embedding-based rank_jobs(). Makes one chat-completion call
-    per uncached job (never batched into a single prompt) using a small
-    bounded thread pool purely for concurrency. Jobs already scored in a
+    """Makes one chat-completion call per uncached job (never batched into
+    a single prompt) using a small bounded thread pool purely for
+    concurrency. Jobs already scored in a
     prior run are reused via a persistent cache keyed by job URL, gated on
     the cached entry having been scored against this same ideal_role_text
     (via _ideal_role_hash) — valid across different title searches that
@@ -531,7 +493,7 @@ def rank_jobs_by_llm(jobs, ideal_role_text=IDEAL_ROLE, model=CHAT_MODEL_SCORE, m
 
 
 # ---------------------------------------------------------------------------
-# 7. MAIN
+# 6. MAIN
 # ---------------------------------------------------------------------------
 
 def main():

@@ -1,6 +1,4 @@
 /.env
 /__pycache__/
-/job_feedback.json
-/job_embeddings_cache.json
 /target_titles_cache.json
 /job_score_cache.json
