@@ -329,7 +329,13 @@ def fetch_smartrecruiters(company_name, token):
             ))
         offset += len(postings)
         total = data.get("totalFound")
-        if not postings or len(postings) < limit or (total is not None and offset >= total):
+        # The server may cap the page below the limit we asked for, so judge
+        # "short page" against the limit it actually applied (echoed in the
+        # response body), not our request's limit.
+        effective_limit = data.get("limit", limit)
+        if (not postings
+                or (total is not None and offset >= total)
+                or len(postings) < effective_limit):
             break
     return out
 
