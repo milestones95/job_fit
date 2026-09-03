@@ -190,14 +190,16 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         url = (body.get("url") or "").strip()
-        if not url:
-            self._send_json(400, {"error": "missing url"})
-            return
 
         try:
             if body.get("confirmed"):
                 result = ar.confirm_registration(body.get("token") or "")
             else:
+                # Only the research lane needs a url — the confirm round-trip
+                # carries {confirmed, token} by contract.
+                if not url:
+                    self._send_json(400, {"error": "missing url"})
+                    return
                 known = sr.register_known_source(url)
                 if known.get("status") != "research_pending":
                     result = known
