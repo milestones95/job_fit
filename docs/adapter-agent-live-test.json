@@ -1,0 +1,62 @@
+{
+  "codegen_note": "live LLM call unavailable (placeholder key, 401); snippet is a hand-written stand-in with the same contract",
+  "research": {
+    "platform": "Themuse",
+    "endpoint": "https://www.themuse.com/api/public/jobs?page=1",
+    "method": "GET",
+    "docs_url": "https://www.themuse.com/en/companies/jobs",
+    "response_shape": "dict{'results': list}; job keys: categories,company,contents,id,levels,locations,model_type,name,publication_date,refs,short_name,tags",
+    "field_map": {
+      "title": "name",
+      "workplace_type": "type",
+      "job_id": "id"
+    },
+    "discovered_via": "user_hints"
+  },
+  "sandbox_test": {
+    "ok": true,
+    "job_count": 20,
+    "first_job": {
+      "title": "SKE Account Manager",
+      "location": "Seattle, WA",
+      "url": "https://www.themuse.com/jobs/cleanharbors/ske-account-manager-ff84b8",
+      "description": "<p><strong>Safety-Kleen</strong>\u00a0is looking for a\u00a0<strong>Territory Sales Representative</strong>, internally known as an Account Manager, to join their safety conscious team! This role focuses on building business within their territories as well as developing and maintaining strong customer relationships. While working in conjunction with route drivers, the Outside Sales Representative provides product insight to our clientele regarding essential lines of business.</p>\n\n<p><strong>This position requires daily visits to our local branch location.</strong></p>\n\n<ul><li>Why work for Safety-Kleen?</li><li>Health and Safety is our #1 priority and we live it 3-6-5!</li><li>Competitive wages: $65,000 - $80,000 + bonus opportunities\u00a0</li><li>Comprehensive health benefits coverage after 30 days of full-time employment</li><li>Group 401K with company matching component</li><li>Generous paid time off, company paid training and tuition reimbursement</li><li>Positive and safe work environments</li><li>Opportunities for growth and development for all the stages of your career</li></ul>\n\n<ul><li>Ensures Health and Safety is the number one priority by complying with all safe work practices, policies, and processes and acting in a safe manner at all times;</li><li>Work with route drivers to convert new sales opportunities;</li><li>Grow current customer base with new lines of business;</li><li>Prepare and deliver customer quotes;</li><li>Prospect and convert leads into customers;</li><li>Achieve monthly sales quotas/budgets;</li></ul>\n\n<ul><li>Exceptional computer skills;</li><li>Tenacious, assertive, strong organizational skills and a hunter mentality;</li><li>Proven ability to develop a book of business;</li><li>Working knowledge and current use of Salesforce.com is a plus;</li><li>3+ years business to business sales experience preferred;</li></ul>\n\n<p><strong>Safety-Kleen Systems,</strong>\u00a0a Clean Harbors company, has a commitment to excellence deeply rooted in a strong sense of tradition. Our entire business model revolves around keeping North American businesses\u00a0green. We generate more than $1.2 billion in annual revenue as a world-class environmental service organization and market leader in industrial hazardous waste management, parts-cleaning technology, and oil re-refining. We collect over 200 million gallons of used motor oil each year and we have the largest re-refinery capacity in North America allowing us to re-refine more than 150 million gallons each year.<br>\u00a0<br>Every day, we help our customers resolve their waste management needs and reduce their carbon footprint.\u00a0<strong>PROTECTION. CHOICES. PEOPLE</strong>.\u00a0<strong>MAKE GREEN WORK.\u2122</strong></p>\n\n<p><strong>Join our safety focused team today!\u00a0 </strong>To learn more about our company, and to apply online for this exciting opportunity, v<strong>isit us at\u00a0</strong><a href=\"http://www.safety-kleen.com/careers\">www.safety-kleen.com/careers</a><strong>.</strong></p>\n\n<p><br><strong>Clean Harbors is an equal opportunity employer. We do not discriminate against applicants due to race, ancestry, color, sexual orientation, gender identity, national origin, religion, age, physical or mental disability, veteran status, or on the basis of any other federal, state/provincial or local protected class.</strong><br><br>Safety-Kleen Systems,\u00a0a Clean Harbors company, is a Military &amp; Veteran friendly company.</p>\n\n<p>*SK\u00a0</p>\n\n<p>#LI-SM1\u00a0</p>",
+      "department": "",
+      "workplace_type": "external",
+      "job_id": "18054997"
+    }
+  },
+  "registered_entry": {
+    "id": "custom-www.themuse.com",
+    "company": "Themuse",
+    "ats": "custom",
+    "board_token": "www.themuse.com",
+    "endpoint": "https://www.themuse.com/api/public/jobs?page=1",
+    "method": "GET",
+    "adapter": true,
+    "research": {
+      "docs_url": "https://www.themuse.com/en/companies/jobs",
+      "endpoint": "https://www.themuse.com/api/public/jobs?page=1",
+      "method": "GET",
+      "response_shape": "dict{'results': list}; job keys: categories,company,contents,id,levels,locations,model_type,name,publication_date,refs,short_name,tags",
+      "field_map": {
+        "title": "name",
+        "workplace_type": "type",
+        "job_id": "id"
+      },
+      "discovered_via": "user_hints"
+    },
+    "verification": {
+      "status": "passed",
+      "job_count": 20,
+      "checked_at": "2026-09-03T18:25:04.955569+00:00",
+      "via": "sandbox"
+    },
+    "added_via": "extension",
+    "snippet_is_string": true
+  },
+  "dispatch_run": {
+    "ok": true,
+    "job_count": 20
+  }
+}

@@ -29,8 +29,9 @@ Endpoints:
 
 import json
 import os
-from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
+import adapter_researcher as ar
 import build_dashboard
 import job_fit_finder as jf
 import source_registry as sr
@@ -152,11 +153,12 @@ class Handler(SimpleHTTPRequestHandler):
         self._send_json(200, {"status": "ok", "count": len(ranked), "jobs": ranked})
 
     def _handle_extension_register_source(self):
-        """Known-board lane of the add-source flow (spec §4): detect the ATS
-        from a careers URL, run the verification gate, register on pass.
-        Unknown boards return research_pending — the adapter agent that
-        researches/generates/tests fetch snippets is a follow-on PR (its
-        page_html input is accepted here and unused until then)."""
+        """Add-source flow, both lanes (spec §3–§4). Known boards: detect,
+        verify, register. Unknown boards: the adapter agent — research the
+        platform, generate a snippet, sandbox-test it, and return the
+        research provenance + preview + a token. Nothing persists until the
+        popup posts the token back with confirmed=true (the confirm
+        round-trip), and only if the sandbox test passed."""
         length = int(self.headers.get("Content-Length", 0))
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
@@ -170,7 +172,18 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         try:
-            result = sr.register_known_source(url)
+            if body.get("confirmed"):
+                result = ar.confirm_registration(body.get("token") or "")
+            else:
+                known = sr.register_known_source(url)
+                if known.get("status") != "research_pending":
+                    result = known
+                else:
+                    result = ar.start_registration(
+                        url,
+                        page_html=body.get("page_html") or "",
+                        hints=body.get("hints") or {},
+                    )
         except Exception as e:
             self._send_json(500, {"error": f"registration failed: {e}"})
             return
