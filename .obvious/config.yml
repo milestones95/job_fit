@@ -1,0 +1,8 @@
+# Repo policy for obvious agents — auto-detected from GitHub settings on 2026-09-03.
+repo: milestones95/job_fit
+defaultBranch: main
+protectedBranches:
+  - main
+# GitHub allows merge, squash, and rebase; the repo's default merge method is a merge commit.
+mergeMethod: merge
+requireHumanMerge: true
