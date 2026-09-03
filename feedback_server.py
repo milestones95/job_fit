@@ -18,22 +18,33 @@ Endpoints:
                                   -> ranked jobs (JSON) for one company on one ATS, for the
                                      Chrome extension popup (see extension/). CORS-enabled
                                      since the caller is a chrome-extension:// origin.
+  POST /api/extension/register_source  {"url": "https://jobs.ashbyhq.com/...", "page_html": "..."}
+                                  -> detect ATS from the URL, verify the board live, and
+                                     register it in sources.json on pass ({"status":
+                                     "registered"|"rejected"|"research_pending"}). Unknown
+                                     boards are the adapter agent's lane (follow-on PR);
+                                     page_html is accepted and unused until then.
+  GET  /api/extension/list_sources -> current registry summary for the popup.
 """
 
 import json
+import os
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 import build_dashboard
 import job_fit_finder as jf
+import source_registry as sr
 
-PORT = 8765
+# JOB_FIT_PORT lets smoke tests (and parallel installs) avoid clashing with
+# a server already on the default port.
+PORT = int(os.environ.get("JOB_FIT_PORT", "8765"))
 
 
 class Handler(SimpleHTTPRequestHandler):
     def _cors_headers(self):
         origin = self.headers.get("Origin", "*")
         self.send_header("Access-Control-Allow-Origin", origin)
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Max-Age", "600")
 
@@ -140,6 +151,56 @@ class Handler(SimpleHTTPRequestHandler):
 
         self._send_json(200, {"status": "ok", "count": len(ranked), "jobs": ranked})
 
+    def _handle_extension_register_source(self):
+        """Known-board lane of the add-source flow (spec §4): detect the ATS
+        from a careers URL, run the verification gate, register on pass.
+        Unknown boards return research_pending — the adapter agent that
+        researches/generates/tests fetch snippets is a follow-on PR (its
+        page_html input is accepted here and unused until then)."""
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            self._send_json(400, {"error": "invalid JSON body"})
+            return
+
+        url = (body.get("url") or "").strip()
+        if not url:
+            self._send_json(400, {"error": "missing url"})
+            return
+
+        try:
+            result = sr.register_known_source(url)
+        except Exception as e:
+            self._send_json(500, {"error": f"registration failed: {e}"})
+            return
+        self._send_json(200, result)
+
+    def _handle_extension_list_sources(self):
+        """Registry summary for the popup (spec §4)."""
+        try:
+            registry = sr.load_registry()
+        except Exception as e:
+            self._send_json(500, {"error": f"could not load sources.json: {e}"})
+            return
+        sources = [
+            {
+                "id": entry.get("id"),
+                "company": entry.get("company"),
+                "ats": entry.get("ats"),
+                "endpoint": entry.get("endpoint"),
+                "verification": entry.get("verification"),
+            }
+            for entry in registry.get("sources", [])
+        ]
+        self._send_json(200, {"status": "ok", "count": len(sources), "sources": sources})
+
+    def do_GET(self):
+        if self.path == "/api/extension/list_sources":
+            self._handle_extension_list_sources()
+        else:
+            super().do_GET()  # static dashboard files
+
     def do_POST(self):
         if self.path == "/api/analyze":
             self._handle_analyze()
@@ -147,6 +208,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._handle_show_all()
         elif self.path == "/api/extension/analyze":
             self._handle_extension_analyze()
+        elif self.path == "/api/extension/register_source":
+            self._handle_extension_register_source()
         else:
             self._send_json(404, {"error": "not found"})
 
