@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Job Fit Finder — Ashby",
+  "version": "0.1.0",
+  "description": "Score this company's Ashby postings against your target titles and ideal role via your local job_fit_finder server.",
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["http://localhost:8765/*"]
+}
