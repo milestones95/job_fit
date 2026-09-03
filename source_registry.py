@@ -214,3 +214,163 @@ def upsert_source(entry):
     sources.append(new_entry)
     save_registry(data)
     return new_entry
+
+# ---------------------------------------------------------------------------
+# Verification gate — one live call; pass ONLY on 2xx + JSON + >=1 job-like
+# object. Never raises for a rejected source, never persists.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class VerifyResult:
+    ok: bool
+    jobs: list = field(default_factory=list)  # raw posting objects on success
+    reason: str | None = None                 # "http_404" | "http_401" | "non_json" | "empty" | "unsafe_scheme" | ...
+
+
+# Keys a real posting object tends to carry across the four known ATSes
+# (Greenhouse/Ashby: title, Lever: text, SmartRecruiters: name).
+_JOB_LIKE_KEYS = ("title", "name", "text", "jobtitle", "position", "opening")
+_LIST_KEYS = ("jobs", "content", "postings", "data", "results", "openings")
+
+
+def _looks_like_job(obj):
+    if not isinstance(obj, dict):
+        return False
+    for key in _JOB_LIKE_KEYS:
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    return False
+
+
+def _extract_jobs(body):
+    """Best-effort job-list extraction from an arbitrary JSON body: a
+    top-level list, a known collection key (Greenhouse/Ashby: "jobs",
+    SmartRecruiters: "content", ...), or a single posting object."""
+    if isinstance(body, list):
+        return body
+    if isinstance(body, dict):
+        for key in _LIST_KEYS:
+            value = body.get(key)
+            if isinstance(value, list):
+                return value
+        if _looks_like_job(body):
+            return [body]
+    return []
+
+
+def _http_request(method, url, headers=None, timeout=None):
+    # Seam for tests: monkeypatch this instead of the requests module.
+    return requests.request(method, url, headers=headers, timeout=timeout)
+
+
+def verify_source(candidate, timeout=15.0):
+    """Call candidate['endpoint'] once. Pass = 2xx + JSON body + at least one
+    job-like object. NEVER raises for a rejected source and NEVER writes —
+    the caller decides; persistence happens only on ok=True (see
+    register_known_source)."""
+    endpoint = (candidate.get("endpoint") or "").strip()
+    scheme = urlsplit(endpoint).scheme.lower()
+    if scheme != "https":
+        # Identity check (detect_ats) is scheme-agnostic on purpose; the
+        # https-only rule lives here, at the gate, before any network call.
+        return VerifyResult(ok=False, reason="unsafe_scheme")
+
+    method = (candidate.get("method") or "GET").upper()
+    headers = candidate.get("headers") or {}
+    try:
+        resp = _http_request(method, endpoint, headers=headers, timeout=timeout)
+    except requests.RequestException as e:
+        print(f"[verify_source] network error for {endpoint}: {e}")
+        return VerifyResult(ok=False, reason="network_error")
+    except Exception as e:  # never raise for a rejected source
+        print(f"[verify_source] unexpected error for {endpoint}: {e}")
+        return VerifyResult(ok=False, reason="verify_error")
+
+    if not (200 <= resp.status_code < 300):
+        return VerifyResult(ok=False, reason=f"http_{resp.status_code}")
+
+    try:
+        body = resp.json()
+    except ValueError:
+        return VerifyResult(ok=False, reason="non_json")
+
+    jobs = _extract_jobs(body)
+    if not any(_looks_like_job(j) for j in jobs):
+        return VerifyResult(ok=False, reason="empty")
+
+    return VerifyResult(ok=True, jobs=jobs)
+
+
+# ---------------------------------------------------------------------------
+# Known-board registration — detect -> verify -> persist. The single write
+# path for native (known-ATS) sources. Unknown boards are the adapter agent's
+# lane (spec §3, follow-on PR) and get research_pending from here.
+# ---------------------------------------------------------------------------
+
+
+def _derive_company_name(token):
+    # Mirrors the extension popup's titleCaseToken(): "acme-corp" -> "Acme Corp".
+    return " ".join(w.capitalize() for w in re.split(r"[-_]", token) if w)
+
+
+def register_known_source(url, added_via="extension"):
+    """Detect + verify + persist a known-ATS board from a careers URL.
+    Returns a status dict for the caller to surface:
+      {"status": "registered", ...} | {"status": "rejected", "reason": ...}
+      | {"status": "research_pending", ...}
+    A rejected verify leaves sources.json byte-identical."""
+    detected = detect_ats(url)
+    if not detected:
+        return {
+            "status": "research_pending",
+            "url": url,
+            "message": "No known ATS fingerprint matched this URL; adapter research for unknown boards is not available yet.",
+        }
+    ats, token = detected
+    template = ENDPOINT_TEMPLATES.get(ats)
+    if not template:  # fingerprint without a native fetcher — treat as unknown
+        return {
+            "status": "research_pending",
+            "url": url,
+            "message": f"Board detected as '{ats}' but no native fetcher exists yet.",
+        }
+
+    candidate = {
+        "id": token.lower(),
+        "company": _derive_company_name(token),
+        "ats": ats,
+        "board_token": token,
+        "endpoint": template.format(token=token),
+        "method": "GET",
+        "headers": {},
+    }
+    result = verify_source(candidate)
+    if not result.ok:
+        return {"status": "rejected", "url": url, "ats": ats, "reason": result.reason}
+
+    # A verified board that's already in the registry keeps its original
+    # company name / added_via / added_at — upsert dedupes on (ats, token).
+    data = load_registry()
+    existing = next((s for s in data["sources"] if s.get("id") == candidate["id"]), None)
+    entry = {
+        **candidate,
+        "company": (existing or {}).get("company") or candidate["company"],
+        "added_via": (existing or {}).get("added_via") or added_via,
+        "added_at": (existing or {}).get("added_at") or _now_iso(),
+        "verification": {
+            "status": "passed",
+            "job_count": len(result.jobs),
+            "checked_at": _now_iso(),
+        },
+    }
+    saved = upsert_source(entry)
+    return {
+        "status": "registered",
+        "source_id": saved["id"],
+        "company": saved["company"],
+        "ats": ats,
+        "job_count": len(result.jobs),
+    }
+
