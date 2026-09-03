@@ -2,3 +2,4 @@
 /__pycache__/
 /target_titles_cache.json
 /job_score_cache.json
+/sources.json

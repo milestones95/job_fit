@@ -29,8 +29,16 @@ import requests
 from openai import OpenAI
 
 
+import source_registry as sr
+
+
 def _load_dotenv():
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    # JOB_FIT_ENV_PATH overrides the .env location — lets tests run in a
+    # genuinely key-less environment even when a real .env sits next to the
+    # repo. Points the loader somewhere without secrets (or nowhere).
+    env_path = os.environ.get("JOB_FIT_ENV_PATH") or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), ".env"
+    )
     if not os.path.exists(env_path):
         return
     with open(env_path) as f:
@@ -44,7 +52,23 @@ def _load_dotenv():
 
 _load_dotenv()
 
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+# The OpenAI client is lazy — constructed on the first LLM call, not at
+# import. Keeps source_registry/job_fit_finder importable without secrets
+# so the registry, detection, and tests never need an API key.
+_client = None
+
+
+def _get_openai_client():
+    global _client
+    if _client is None:
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is not set — put it in .env next to this "
+                "script or export it in your shell."
+            )
+        _client = OpenAI(api_key=api_key)
+    return _client
 
 # Chat models used for the direct-LLM flow (title expansion + per-job scoring).
 CHAT_MODEL_EXPAND = os.environ.get("JOB_FIT_EXPAND_MODEL", "gpt-4o-mini")
@@ -53,23 +77,16 @@ CHAT_MODEL_SCORE = os.environ.get("JOB_FIT_SCORE_MODEL", "gpt-4o-mini")
 TITLE_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "target_titles_cache.json")
 SCORE_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "job_score_cache.json")
 DESC_TRUNCATE_CHARS = 6000
-
-# ---------------------------------------------------------------------------
-# 1. CONFIG — the companies you want to track, and the fit criteria.
-# ---------------------------------------------------------------------------
-
 # Add companies here. `token` is the company's board-token / job-board slug —
 # find it in the URL of their careers page, e.g.:
 #   Greenhouse: https://boards.greenhouse.io/{token}          -> ats="greenhouse"
 #   Ashby:      https://jobs.ashbyhq.com/{token}               -> ats="ashby"
 #   Lever:      https://jobs.lever.co/{token}                  -> ats="lever"
-COMPANIES = [
-    {"name": "EliseAI", "ats": "ashby", "token": "eliseai"},
-    {"name": "Browserbase", "ats": "ashby", "token": "browserbase"},
-    {"name": " Tamarind Bio", "ats": "ashby", "token": "tamarindbio"},
-    {"name": "Decagon", "ats": "ashby", "token": "decagon"}
-
-]
+#   SmartRecruiters: https://jobs.smartrecruiters.com/{token}   -> ats="smartrecruiters"
+# These four built-ins seed sources.json on first run (see source_registry.py);
+# after that the registry is the source of truth — add boards via the
+# extension's register_source endpoint or by editing sources.json, not here.
+from source_registry import BUILTIN_COMPANIES as COMPANIES
 
 # The title keyword list used for the cheap first-pass filter is no longer
 # hardcoded — see get_target_title_keywords(), which prompts the user for
@@ -282,26 +299,91 @@ def fetch_lever(company_name, token):
     return out
 
 
+def fetch_smartrecruiters(company_name, token):
+    """SmartRecruiters public postings API. List responses carry offset/limit
+    pagination ("totalFound") — walk it when present, capped at 10 pages so a
+    misbehaving API can't loop forever. The list endpoint has no description
+    or compensation fields; those stay blank, same as the other list-only
+    fetchers."""
+    base_url = f"https://api.smartrecruiters.com/v1/companies/{token}/postings"
+    out = []
+    offset, limit, max_pages = 0, 100, 10
+    for _ in range(max_pages):
+        resp = requests.get(base_url, params={"offset": offset, "limit": limit}, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        postings = data.get("content") or []
+        for j in postings:
+            loc = j.get("location") or {}
+            location = ", ".join(filter(None, [loc.get("city"), loc.get("region"), loc.get("country")]))
+            department = (j.get("department") or {}).get("label", "")
+            job_id = j.get("id")
+            out.append(normalize(
+                company=company_name,
+                title=j.get("name"),
+                location=location,
+                url=f"https://jobs.smartrecruiters.com/{token}/{job_id}" if job_id else "",
+                description="",
+                department=department,
+                job_id=job_id,
+            ))
+        offset += len(postings)
+        total = data.get("totalFound")
+        if not postings or len(postings) < limit or (total is not None and offset >= total):
+            break
+    return out
+
+
 FETCHERS = {
     "greenhouse": fetch_greenhouse,
     "ashby": fetch_ashby,
     "lever": fetch_lever,
+    "smartrecruiters": fetch_smartrecruiters,
 }
+
+
+def get_sources():
+    """Registry-aware source table: built-ins first, registry entries
+    override by id (sources.json is the source of truth after it is seeded
+    on first run — see source_registry.py)."""
+    registry = sr.load_registry()
+    merged = {}
+    for company in sr.BUILTIN_COMPANIES:
+        merged[company["token"].lower()] = {
+            "id": company["token"].lower(),
+            "name": company["name"],
+            "ats": company["ats"],
+            "token": company["token"],
+        }
+    for entry in registry.get("sources", []):
+        if entry.get("adapter"):
+            # Snippet-kind entries (LLM adapter agent, follow-on PR) have no
+            # native fetcher yet — skip them here until the runner exists.
+            print(f"  [skip] snippet source '{entry.get('id')}' — adapter runner not wired yet")
+            continue
+        source_id = entry.get("id") or entry.get("board_token", "")
+        merged[source_id] = {
+            "id": source_id,
+            "name": entry.get("company") or source_id,
+            "ats": entry.get("ats"),
+            "token": entry.get("board_token"),
+        }
+    return merged
 
 
 def fetch_all_postings():
     all_jobs = []
-    for company in COMPANIES:
-        fetcher = FETCHERS.get(company["ats"])
+    for source in get_sources().values():
+        fetcher = FETCHERS.get(source["ats"])
         if not fetcher:
-            print(f"  [skip] unknown ATS '{company['ats']}' for {company['name']}")
+            print(f"  [skip] unknown ATS '{source['ats']}' for {source['name']}")
             continue
         try:
-            jobs = fetcher(company["name"], company["token"])
-            print(f"  [ok] {company['name']}: {len(jobs)} postings")
+            jobs = fetcher(source["name"], source["token"])
+            print(f"  [ok] {source['name']}: {len(jobs)} postings")
             all_jobs.extend(jobs)
         except Exception as e:
-            print(f"  [error] {company['name']} ({company['ats']}): {e}")
+            print(f"  [error] {source['name']} ({source['ats']}): {e}")
     return all_jobs
 
 
@@ -360,7 +442,7 @@ short (2-5 words), lowercase, no punctuation beyond spaces/hyphens.
 Respond with strict JSON: {{"keywords": ["...", "..."]}}"""
 
     try:
-        resp = client.chat.completions.create(
+        resp = _get_openai_client().chat.completions.create(
             model=model,
             temperature=0,
             max_tokens=400,
@@ -475,7 +557,7 @@ Score 0-100 how well this posting matches the ideal role (100 = perfect match,
 {{"score": <integer 0-100>, "reasoning": "<1-2 sentence explanation>"}}"""
 
     try:
-        resp = client.chat.completions.create(
+        resp = _get_openai_client().chat.completions.create(
             model=model,
             temperature=0,
             max_tokens=200,
