@@ -421,6 +421,17 @@ def fetch_adapter_source(source):
     ]
 
 
+def resolve_adapter_source(source_id):
+    """The registry entry for a confirmed adapter (snippet) source, or None —
+    the extension endpoint's seam for dispatching custom boards by the id
+    registration returned."""
+    return next(
+        (e for e in sr.load_registry().get("sources", [])
+         if e.get("id") == source_id and e.get("adapter")),
+        None,
+    )
+
+
 def fetch_all_postings():
     all_jobs = []
     for source in get_sources().values():

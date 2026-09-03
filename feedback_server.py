@@ -13,17 +13,24 @@ Usage:
 Endpoints:
   POST /api/analyze              {"titles": "...", "ideal_role": "..."}  -> build_dashboard.build(titles, ideal_role)
   POST /api/show_all             (no body)                                -> build_dashboard.build_show_all()
-  POST /api/extension/analyze    {"ats": "ashby"|"greenhouse", "company_token": "...",
-                                   "company_name": "...", "titles": "...", "ideal_role": "..."}
+  POST /api/extension/analyze    {"ats": "ashby"|"greenhouse"|"lever"|"smartrecruiters"|"custom",
+                                   "company_token": "...", "company_name": "...",
+                                   "titles": "...", "ideal_role": "..."}
                                   -> ranked jobs (JSON) for one company on one ATS, for the
-                                     Chrome extension popup (see extension/). CORS-enabled
-                                     since the caller is a chrome-extension:// origin.
-  POST /api/extension/register_source  {"url": "https://jobs.ashbyhq.com/...", "page_html": "..."}
-                                  -> detect ATS from the URL, verify the board live, and
-                                     register it in sources.json on pass ({"status":
-                                     "registered"|"rejected"|"research_pending"}). Unknown
-                                     boards are the adapter agent's lane (follow-on PR);
-                                     page_html is accepted and unused until then.
+                                     Chrome extension popup (see extension/). "custom"
+                                     resolves a registered adapter (snippet) source by the id
+                                     registration returned and runs its stored snippet through
+                                     the sandboxed dispatch. CORS-enabled since the caller is a
+                                     chrome-extension:// origin.
+  POST /api/extension/register_source  {"url": "https://jobs.ashbyhq.com/...", "page_html"?: "...",
+                                        "hints"?: {...}} | {"confirmed": true, "token": "..."}
+                                  -> known boards: detect the ATS from the URL, verify the
+                                     board live, and register it in sources.json on pass
+                                     ({"status": "registered"|"rejected"}). Unknown boards:
+                                     the adapter agent — research, generate, sandbox-test —
+                                     returns research provenance + preview + a token
+                                     ({"status": "research_pending"}); nothing persists until
+                                     the popup posts the token back with confirmed=true.
   GET  /api/extension/list_sources -> current registry summary for the popup.
 """
 
@@ -111,7 +118,7 @@ class Handler(SimpleHTTPRequestHandler):
         if not company_token:
             self._send_json(400, {"error": "missing company_token"})
             return
-        if ats not in jf.FETCHERS:
+        if ats != "custom" and ats not in jf.FETCHERS:
             self._send_json(400, {"error": f"unsupported ats '{ats}'"})
             return
         if not titles:
@@ -127,11 +134,27 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(500, {"error": f"title expansion failed: {e}"})
             return
 
-        try:
-            jobs = jf.FETCHERS[ats](company_name, company_token)
-        except Exception as e:
-            self._send_json(502, {"error": f"could not fetch postings for '{company_token}': {e}"})
-            return
+        if ats == "custom":
+            # Adapter (snippet) board: company_token is the source id the
+            # registration returned; its stored snippet runs through the same
+            # sandboxed dispatch the dashboard pipeline uses.
+            entry = jf.resolve_adapter_source(company_token)
+            if not entry:
+                self._send_json(400, {"error": f"no registered adapter source '{company_token}'"})
+                return
+            try:
+                jobs = jf.fetch_adapter_source(
+                    {"id": entry["id"], "name": entry.get("company") or company_name}
+                )
+            except Exception as e:
+                self._send_json(502, {"error": f"could not fetch postings for '{company_token}': {e}"})
+                return
+        else:
+            try:
+                jobs = jf.FETCHERS[ats](company_name, company_token)
+            except Exception as e:
+                self._send_json(502, {"error": f"could not fetch postings for '{company_token}': {e}"})
+                return
 
         matched = [j for j in jobs if jf.title_matches(j["title"], keywords)]
         if not matched:
@@ -167,14 +190,16 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         url = (body.get("url") or "").strip()
-        if not url:
-            self._send_json(400, {"error": "missing url"})
-            return
 
         try:
             if body.get("confirmed"):
                 result = ar.confirm_registration(body.get("token") or "")
             else:
+                # Only the research lane needs a url — the confirm round-trip
+                # carries {confirmed, token} by contract.
+                if not url:
+                    self._send_json(400, {"error": "missing url"})
+                    return
                 known = sr.register_known_source(url)
                 if known.get("status") != "research_pending":
                     result = known

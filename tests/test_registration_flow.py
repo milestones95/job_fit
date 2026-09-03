@@ -210,6 +210,66 @@ def test_dispatch_with_broken_snippet_yields_no_postings(seeded_registry, monkey
     assert jobs == []
 
 
+def test_extension_dispatch_resolves_adapter_source_by_id(seeded_registry):
+    """/api/extension/analyze with ats=\"custom\" dispatches on the id the
+    registration returned — the registry entry must carry the stored snippet."""
+    _register_confirmed()
+    entry = jf.resolve_adapter_source("custom-careers.acme.com")
+    assert entry is not None
+    assert entry["adapter"] is True
+    assert isinstance(entry["snippet"], str) and entry["snippet"]
+
+
+def test_extension_dispatch_ignores_native_and_unknown_ids(seeded_registry):
+    # A native built-in is never an adapter source; unknown ids resolve to None
+    # (the server turns that into a 400, not a crash).
+    assert jf.resolve_adapter_source("eliseai") is None
+    assert jf.resolve_adapter_source("no-such-source") is None
+
+
+def test_register_source_http_confirm_round_trip_needs_no_url(seeded_registry):
+    """Regression: the confirm leg of /api/extension/register_source 400'd
+    because the research lane's url check ran first — the confirm round-trip
+    carries {confirmed, token} with no url by contract."""
+    import json as _json
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    import feedback_server as fs
+
+    server = ThreadingHTTPServer(("localhost", 0), fs.Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def post(payload):
+        req = urllib.request.Request(
+            f"http://localhost:{server.server_address[1]}/api/extension/register_source",
+            data=_json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.status, _json.loads(resp.read())
+        except urllib.error.HTTPError as err:
+            return err.code, _json.loads(err.read())
+
+    try:
+        # The research lane still enforces the url requirement.
+        status, body = post({"confirmed": False})
+        assert status == 400
+        assert body["error"] == "missing url"
+
+        # A confirm POST must reach the researcher: an unknown token comes
+        # back as a 200 rejected verdict, never a 400 missing-url error.
+        status, body = post({"confirmed": True, "token": "no-such-token"})
+        assert status == 200
+        assert body == {"status": "rejected", "reason": "unknown_token"}
+    finally:
+        server.shutdown()
+
+
 def test_dispatch_coerces_non_string_fields(seeded_registry):
     _register_confirmed()
     numeric = (
