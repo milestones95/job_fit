@@ -46,8 +46,10 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlsplit
+from uuid import uuid4
 
 import source_registry as sr
 
@@ -663,3 +665,142 @@ def test_snippet(code, timeout=20.0):
     if not any(sr._looks_like_job(j) for j in jobs):
         return sr.VerifyResult(ok=False, reason="empty")
     return sr.VerifyResult(ok=True, jobs=jobs[:_PREVIEW_CAP])
+
+# ---------------------------------------------------------------------------
+# Registration — persist a snippet + provenance ONLY after the sandbox test
+# passes AND the user confirms. Plus the server-facing round-trip:
+# start_registration() hands the popup research + preview + a token;
+# confirm_registration() exchanges the token for a persisted source.
+# ---------------------------------------------------------------------------
+
+# In-memory pending registrations (research -> confirm happens within
+# minutes; nothing is written to disk before confirmation).
+_PENDING_REGISTRATIONS = {}
+_PENDING_TTL_SECONDS = 15 * 60
+
+
+def run_stored_snippet(snippet, timeout=30.0):
+    """Runtime execution of a stored adapter snippet — the exact sandbox
+    rules as test time (fresh subprocess, restricted namespace, https-only
+    wrapper, hard timeout). Returns (ok, jobs, reason); never raises."""
+    return _execute_sandboxed(snippet, timeout=timeout)
+
+
+def register_source(candidate, snippet, research, confirmed):
+    """Confirm-gated persistence: sources.json gains an adapter entry ONLY
+    when the sandbox test passed AND confirmed is True. Everything else
+    leaves the registry byte-identical. The snippet is stored as a plain
+    string — the application never imports generated code."""
+    verify = test_snippet(snippet)
+    if not verify.ok:
+        return {"status": "rejected", "url": candidate, "reason": verify.reason}
+    if not confirmed:
+        return {
+            "status": "needs_confirmation",
+            "url": candidate,
+            "message": "Sandbox test passed — waiting for explicit user confirmation.",
+            "preview_jobs": verify.jobs,
+        }
+
+    parts = urlsplit(candidate)
+    host = (parts.netloc or "").lower().rsplit("@", 1)[-1].split(":")[0]
+    entry = {
+        "id": f"custom-{host}" if host else "custom-unknown",
+        "company": research.platform or host or "Unknown board",
+        "ats": "custom",
+        "board_token": host,
+        "endpoint": research.endpoint,
+        "method": "GET",
+        "adapter": True,
+        # The generated code is DATA — one string the sandbox runner may
+        # execute. Nothing in the codebase imports it.
+        "snippet": snippet,
+        "research": {
+            "docs_url": research.docs_url,
+            "endpoint": research.endpoint,
+            "method": research.method,
+            "response_shape": research.response_shape,
+            "field_map": research.field_map,
+            "discovered_via": research.discovered_via,
+        },
+        "verification": {
+            "status": "passed",
+            "job_count": len(verify.jobs),
+            "checked_at": sr._now_iso(),
+            "via": "sandbox",
+        },
+        "added_via": "extension",
+    }
+    saved = sr.upsert_source(entry)
+    return {
+        "status": "registered",
+        "id": saved.get("id"),
+        "company": saved.get("company"),
+        "endpoint": saved.get("endpoint"),
+        "job_count": len(verify.jobs),
+    }
+
+
+def start_registration(url, page_html="", hints=None):
+    """Adapter-agent lane for unknown boards: research -> generate -> test.
+    Persists NOTHING — it returns the research provenance, a preview of the
+    test run, and a token the popup can confirm. Never raises."""
+    research = research_platform(url, page_html=page_html, user_hints=hints)
+    if research is None:
+        return {
+            "status": "research_unavailable",
+            "url": url,
+            "message": "Could not identify a public jobs API for this board (Workday boards are not supported).",
+        }
+    snippet = generate_snippet(research)
+    if snippet is None:
+        return {
+            "status": "codegen_failed",
+            "url": url,
+            "message": "Snippet generation failed — retry, or paste the endpoint details from devtools as hints.",
+            "research": {
+                "docs_url": research.docs_url,
+                "endpoint": research.endpoint,
+                "method": research.method,
+                "response_shape": research.response_shape,
+                "field_map": research.field_map,
+                "discovered_via": research.discovered_via,
+            },
+        }
+    verify = test_snippet(snippet)
+    token = uuid4().hex
+    _PENDING_REGISTRATIONS[token] = {
+        "url": url,
+        "snippet": snippet,
+        "research": research,
+        "created": time.time(),
+    }
+    return {
+        "status": "research_pending",
+        "url": url,
+        "token": token,
+        "test_passed": verify.ok,
+        "test_reason": verify.reason,
+        "preview_jobs": verify.jobs if verify.ok else [],
+        "research": {
+            "docs_url": research.docs_url,
+            "endpoint": research.endpoint,
+            "method": research.method,
+            "response_shape": research.response_shape,
+            "field_map": research.field_map,
+            "discovered_via": research.discovered_via,
+        },
+    }
+
+
+def confirm_registration(token):
+    """Exchange a pending-registration token for a persisted source. The
+    sandbox test already passed at start_registration; confirmation is the
+    user's explicit go-ahead. Unknown/expired tokens are rejected."""
+    pending = _PENDING_REGISTRATIONS.pop(token, None)
+    if not pending:
+        return {"status": "rejected", "reason": "unknown_token"}
+    if time.time() - pending["created"] > _PENDING_TTL_SECONDS:
+        return {"status": "rejected", "reason": "expired_token"}
+    return register_source(pending["url"], pending["snippet"], pending["research"], confirmed=True)
+

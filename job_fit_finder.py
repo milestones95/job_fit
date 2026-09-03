@@ -22,13 +22,13 @@ import hashlib
 import json
 import os
 import re
-from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 
 import requests
 from openai import OpenAI
 
-
+import adapter_researcher as ar
 import source_registry as sr
 
 
@@ -86,7 +86,6 @@ DESC_TRUNCATE_CHARS = 6000
 # These four built-ins seed sources.json on first run (see source_registry.py);
 # after that the registry is the source of truth — add boards via the
 # extension's register_source endpoint or by editing sources.json, not here.
-from source_registry import BUILTIN_COMPANIES as COMPANIES
 
 # The title keyword list used for the cheap first-pass filter is no longer
 # hardcoded — see get_target_title_keywords(), which prompts the user for
@@ -363,9 +362,16 @@ def get_sources():
         }
     for entry in registry.get("sources", []):
         if entry.get("adapter"):
-            # Snippet-kind entries (LLM adapter agent, follow-on PR) have no
-            # native fetcher yet — skip them here until the runner exists.
-            print(f"  [skip] snippet source '{entry.get('id')}' — adapter runner not wired yet")
+            # Snippet-kind entries (LLM adapter agent): fetched through the
+            # sandbox runner, not a native ATS fetcher.
+            source_id = entry.get("id") or entry.get("board_token", "")
+            merged[source_id] = {
+                "id": source_id,
+                "name": entry.get("company") or source_id,
+                "ats": "custom",
+                "token": entry.get("board_token"),
+                "adapter": True,
+            }
             continue
         source_id = entry.get("id") or entry.get("board_token", "")
         merged[source_id] = {
@@ -377,9 +383,55 @@ def get_sources():
     return merged
 
 
+def _text(value):
+    # Adapter snippets may emit non-string scalars for optional fields —
+    # coerce everything downstream expects to a string.
+    return value if isinstance(value, str) else ""
+
+
+def fetch_adapter_source(source):
+    """Run a stored adapter snippet through the sandbox runner and normalize
+    its output into the pipeline's posting shape. A snippet failure yields
+    no postings for that source — the rest of the fetch is unaffected."""
+    entry = next(
+        (e for e in sr.load_registry().get("sources", []) if e.get("id") == source["id"]),
+        None,
+    )
+    snippet = (entry or {}).get("snippet")
+    if not snippet or not isinstance(snippet, str):
+        print(f"  [error] {source['name']} (adapter): registry entry has no snippet")
+        return []
+    ok, jobs, reason = ar.run_stored_snippet(snippet)
+    if not ok:
+        print(f"  [error] {source['name']} (adapter): {reason}")
+        return []
+    return [
+        normalize(
+            company=source["name"],
+            title=_text(j.get("title")),
+            location=_text(j.get("location")),
+            url=_text(j.get("url")),
+            description=_text(j.get("description")),
+            department=_text(j.get("department")),
+            workplace_type=_text(j.get("workplace_type")),
+            compensation=_text(j.get("compensation")),
+            job_id=_text(j.get("job_id")),
+        )
+        for j in jobs
+    ]
+
+
 def fetch_all_postings():
     all_jobs = []
     for source in get_sources().values():
+        if source.get("adapter"):
+            try:
+                jobs = fetch_adapter_source(source)
+                print(f"  [ok] {source['name']}: {len(jobs)} postings (adapter)")
+                all_jobs.extend(jobs)
+            except Exception as e:
+                print(f"  [error] {source['name']} (adapter): {e}")
+            continue
         fetcher = FETCHERS.get(source["ats"])
         if not fetcher:
             print(f"  [skip] unknown ATS '{source['ats']}' for {source['name']}")

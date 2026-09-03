@@ -114,19 +114,22 @@ def test_get_sources_builtins_first_registry_overrides(registry_path):
     assert merged["decagon"]["token"] == "decagon"     # built-ins still present
 
 
-def test_get_sources_skips_snippet_entries(registry_path, capsys):
+def test_get_sources_dispatches_adapter_entries(registry_path):
     import job_fit_finder as jf
 
     jf.get_sources()
     data = sr.load_registry()
     data["sources"].append({
         "id": "acme-custom", "company": "Acme Custom",
-        "adapter": {"kind": "snippet", "language": "python", "code": "def fetch_jobs():\n    return []"},
+        "adapter": True, "ats": "custom",
+        "snippet": "def fetch_jobs():\n    return []",
         "added_via": "extension", "added_at": "2026-09-03T00:00:00Z",
-        "verification": {"status": "passed", "job_count": 1, "checked_at": "2026-09-03T00:00:00Z"},
+        "verification": {"status": "passed", "job_count": 1, "checked_at": "2026-09-03T00:00:00Z", "via": "sandbox"},
     })
     sr.save_registry(data)
 
     merged = jf.get_sources()
-    assert "acme-custom" not in merged  # not dispatchable until the runner exists
-    assert "snippet source" in capsys.readouterr().out
+    entry = merged["acme-custom"]  # dispatchable through the sandbox runner
+    assert entry["adapter"] is True
+    assert entry["name"] == "Acme Custom"
+    assert entry["ats"] == "custom"
