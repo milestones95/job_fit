@@ -210,6 +210,23 @@ def test_dispatch_with_broken_snippet_yields_no_postings(seeded_registry, monkey
     assert jobs == []
 
 
+def test_extension_dispatch_resolves_adapter_source_by_id(seeded_registry):
+    """/api/extension/analyze with ats=\"custom\" dispatches on the id the
+    registration returned — the registry entry must carry the stored snippet."""
+    _register_confirmed()
+    entry = jf.resolve_adapter_source("custom-careers.acme.com")
+    assert entry is not None
+    assert entry["adapter"] is True
+    assert isinstance(entry["snippet"], str) and entry["snippet"]
+
+
+def test_extension_dispatch_ignores_native_and_unknown_ids(seeded_registry):
+    # A native built-in is never an adapter source; unknown ids resolve to None
+    # (the server turns that into a 400, not a crash).
+    assert jf.resolve_adapter_source("eliseai") is None
+    assert jf.resolve_adapter_source("no-such-source") is None
+
+
 def test_dispatch_coerces_non_string_fields(seeded_registry):
     _register_confirmed()
     numeric = (

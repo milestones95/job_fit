@@ -369,6 +369,9 @@ def register_known_source(url, added_via="extension"):
     return {
         "status": "registered",
         "source_id": saved["id"],
+        # The exact verified board token — the popup analyzes native lanes
+        # with it (ids are lowercased, tokens keep their original case).
+        "board_token": saved.get("board_token", token),
         "company": saved["company"],
         "ats": ats,
         "job_count": len(result.jobs),

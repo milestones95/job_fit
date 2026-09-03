@@ -38,6 +38,9 @@ def test_known_board_registers_and_verifies(monkeypatch, seeded_registry):
     assert out["status"] == "registered"
     assert out["ats"] == "ashby"
     assert out["job_count"] == 3
+    # The popup analyzes native lanes with the exact verified token (ids are
+    # lowercased; tokens keep their original case).
+    assert out["board_token"] == "acme-corp"
 
     data = json.loads(seeded_registry.read_text())
     entry = next(s for s in data["sources"] if s["id"] == "acme-corp")
